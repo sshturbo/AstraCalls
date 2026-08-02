@@ -26,7 +26,7 @@ func newSessionStore(ctx context.Context, db *sql.DB) (*sessionStore, error) {
 		jid        TEXT,
 		webhook    TEXT,
 		chatwoot   TEXT,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
 	if err != nil {
 		return nil, err
@@ -34,7 +34,7 @@ func newSessionStore(ctx context.Context, db *sql.DB) (*sessionStore, error) {
 	// migração p/ bancos antigos (Postgres aceita IF NOT EXISTS no ADD COLUMN)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS webhook TEXT`)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS chatwoot TEXT`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP`)
 	return &sessionStore{db: db}, nil
 }
 
