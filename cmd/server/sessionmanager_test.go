@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	_ "modernc.org/sqlite"
 )
 
 type testSessionManager struct {
