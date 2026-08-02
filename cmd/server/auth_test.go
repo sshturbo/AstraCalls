@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -64,7 +65,11 @@ func TestSingleAdministratorSetupAndLogin(t *testing.T) {
 		t.Fatalf("unexpected verified claims: %+v", verified)
 	}
 
-	tampered := token[:len(token)-1] + "A"
+	replacement := "A"
+	if strings.HasSuffix(token, replacement) {
+		replacement = "B"
+	}
+	tampered := token[:len(token)-1] + replacement
 	if _, err := auth.verifyToken(tampered); !errors.Is(err, errInvalidToken) {
 		t.Fatalf("tampered JWT must be rejected, got %v", err)
 	}
@@ -132,19 +137,25 @@ func TestAuthHTTPBootstrapIsPublicAndUnique(t *testing.T) {
 
 	statusResponse := httptest.NewRecorder()
 	handler.ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
-	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"initialized":false`) {
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), "\"initialized\":false") {
 		t.Fatalf("unexpected initial status: %d %s", statusResponse.Code, statusResponse.Body.String())
 	}
 
-	setupBody := `{"username":"admin","password":"very-strong-password"}`
+	setupJSON, err := json.Marshal(map[string]string{
+		"username": "admin",
+		"password": "very-strong-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	setupResponse := httptest.NewRecorder()
-	handler.ServeHTTP(setupResponse, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(setupBody)))
-	if setupResponse.Code != http.StatusCreated || !strings.Contains(setupResponse.Body.String(), `"token"`) {
+	handler.ServeHTTP(setupResponse, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(string(setupJSON))))
+	if setupResponse.Code != http.StatusCreated || !strings.Contains(setupResponse.Body.String(), "\"token\"") {
 		t.Fatalf("unexpected setup response: %d %s", setupResponse.Code, setupResponse.Body.String())
 	}
 
 	secondResponse := httptest.NewRecorder()
-	handler.ServeHTTP(secondResponse, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(setupBody)))
+	handler.ServeHTTP(secondResponse, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(string(setupJSON))))
 	if secondResponse.Code != http.StatusConflict {
 		t.Fatalf("second administrator must be rejected, got %d", secondResponse.Code)
 	}
