@@ -71,7 +71,7 @@ func main() {
 
 	apiKey := strings.TrimSpace(os.Getenv("WACALLS_API_KEY"))
 	baseHandler := srv.routes()
-	handler := withCORS(srv.withAdminAuth(baseHandler, apiKey))
+	handler := withManagerCORS(srv.withAdminAuth(baseHandler, apiKey))
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           handler,
