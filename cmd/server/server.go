@@ -10,6 +10,7 @@ import (
 type server struct {
 	broker    *Broker
 	sessions  *SessionManager
+	auth      *authService
 	log       *slog.Logger
 	staticDir string
 }
@@ -35,10 +36,14 @@ func newServer(ctx context.Context, pgURL, pgNamespace, staticDir string, maxCal
 	if err != nil {
 		return nil, err
 	}
+	auth, err := newAuthService(ctx, mainDB, log)
+	if err != nil {
+		return nil, err
+	}
 
 	broker := NewBroker()
 	mgr := newSessionManager(ctx, provider, broker, store, waLogger, log, maxCalls)
 	broker.SnapshotFn = mgr.snapshotEvents
 
-	return &server{broker: broker, sessions: mgr, log: log, staticDir: staticDir}, nil
+	return &server{broker: broker, sessions: mgr, auth: auth, log: log, staticDir: staticDir}, nil
 }
