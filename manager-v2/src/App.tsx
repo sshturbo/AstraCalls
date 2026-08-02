@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   Copy,
   FlaskConical,
-  Link2,
   LoaderCircle,
   LogOut,
   MessageSquare,
@@ -19,20 +18,21 @@ import {
   XCircle,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { apiRequest, eventsUrl } from "./api";
+import { apiRequest, subscribeToEvents } from "./api";
 import { apiTools } from "./catalog";
 import type { ApiSettings, ApiTool, LogEntry, RequestResult, SessionInfo } from "./types";
 
+const SETTINGS_STORAGE_KEY = "astracalls-manager-v2-settings";
 const defaultSettings: ApiSettings = { baseUrl: "", apiKey: "" };
 
 const readStoredSettings = (): ApiSettings => {
   try {
-    const raw = localStorage.getItem("astracalls-manager-v2-settings");
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return defaultSettings;
     const parsed = JSON.parse(raw) as Partial<ApiSettings>;
     return {
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
-      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+      apiKey: "",
     };
   } catch {
     return defaultSettings;
@@ -47,6 +47,17 @@ const statusLabel = (state: string) => {
   if (state === "connecting") return "Conectando";
   if (state === "logged_out") return "Desconectada";
   return state || "Desconhecido";
+};
+
+const retainPendingQrCodes = (current: Record<string, string>, nextSessions: SessionInfo[]) => {
+  const pending = new Set(nextSessions.filter((session) => !session.paired).map((session) => session.id));
+  const next: Record<string, string> = {};
+  let changed = false;
+  for (const [sessionID, qr] of Object.entries(current)) {
+    if (pending.has(sessionID)) next[sessionID] = qr;
+    else changed = true;
+  }
+  return changed ? next : current;
 };
 
 export const App = () => {
@@ -88,6 +99,15 @@ export const App = () => {
     setLogs((current) => [entry, ...current].slice(0, 100));
   }, []);
 
+  const applySessionList = useCallback((nextSessions: SessionInfo[]) => {
+    setSessions(nextSessions);
+    setQrBySession((current) => retainPendingQrCodes(current, nextSessions));
+    setActiveId((current) => {
+      if (current && nextSessions.some((session) => session.id === current)) return current;
+      return nextSessions[0]?.id ?? "";
+    });
+  }, []);
+
   const loadSessions = useCallback(async () => {
     const result = await apiRequest(settings, "GET", "/api/sessions");
     if (!result.ok) {
@@ -97,83 +117,81 @@ export const App = () => {
 
     const data = result.data as { sessions?: SessionInfo[] };
     const nextSessions = Array.isArray(data.sessions) ? data.sessions : [];
-    setSessions(nextSessions);
-    setActiveId((current) => {
-      if (current && nextSessions.some((session) => session.id === current)) return current;
-      return nextSessions[0]?.id ?? "";
-    });
+    applySessionList(nextSessions);
     addLog("success", `${nextSessions.length} sessão(ões) carregada(s)`);
-  }, [addLog, settings]);
+  }, [addLog, applySessionList, settings]);
 
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
 
   useEffect(() => {
-    setStreamState("connecting");
-    const source = new EventSource(eventsUrl(settings));
+    const unsubscribe = subscribeToEvents(settings, {
+      onConnecting: () => setStreamState("connecting"),
+      onOpen: () => {
+        setStreamState("online");
+        addLog("success", "Canal de eventos conectado");
+      },
+      onError: (error) => {
+        setStreamState("offline");
+        addLog("error", "Canal de eventos desconectado", error.message);
+      },
+      onMessage: (data) => {
+        try {
+          const event = JSON.parse(data) as Record<string, unknown>;
+          const type = typeof event.type === "string" ? event.type : "event";
+          addLog("event", type, event);
 
-    source.onopen = () => {
-      setStreamState("online");
-      addLog("success", "Canal de eventos conectado");
-    };
-
-    source.onerror = () => {
-      setStreamState("offline");
-    };
-
-    source.onmessage = (message) => {
-      try {
-        const event = JSON.parse(message.data) as Record<string, unknown>;
-        const type = typeof event.type === "string" ? event.type : "event";
-        addLog("event", type, event);
-
-        if (type === "session-list" && Array.isArray(event.sessions)) {
-          const nextSessions = event.sessions as SessionInfo[];
-          setSessions(nextSessions);
-          setActiveId((current) => {
-            if (current && nextSessions.some((session) => session.id === current)) return current;
-            return nextSessions[0]?.id ?? "";
-          });
-        }
-
-        if (type === "session-qr" && typeof event.sessionId === "string" && typeof event.qr === "string") {
-          setQrBySession((current) => ({ ...current, [event.sessionId as string]: event.qr as string }));
-        }
-
-        if (type === "auth-state" && typeof event.sessionId === "string") {
-          const sessionId = event.sessionId;
-          setSessions((current) =>
-            current.map((session) =>
-              session.id === sessionId
-                ? {
-                    ...session,
-                    state: typeof event.state === "string" ? event.state : session.state,
-                    paired: typeof event.paired === "boolean" ? event.paired : session.paired,
-                  }
-                : session,
-            ),
-          );
-          if (typeof event.qr === "string" && event.qr) {
-            setQrBySession((current) => ({ ...current, [sessionId]: event.qr as string }));
+          if (type === "session-list" && Array.isArray(event.sessions)) {
+            applySessionList(event.sessions as SessionInfo[]);
           }
-        }
-      } catch (error) {
-        addLog("error", "Evento SSE inválido", error instanceof Error ? error.message : String(error));
-      }
-    };
 
-    return () => source.close();
-  }, [addLog, settings]);
+          if (type === "session-qr" && typeof event.sessionId === "string" && typeof event.qr === "string") {
+            setQrBySession((current) => ({ ...current, [event.sessionId as string]: event.qr as string }));
+          }
+
+          if (type === "auth-state" && typeof event.sessionId === "string") {
+            const sessionId = event.sessionId;
+            const paired = typeof event.paired === "boolean" ? event.paired : undefined;
+            setSessions((current) =>
+              current.map((session) =>
+                session.id === sessionId
+                  ? {
+                      ...session,
+                      state: typeof event.state === "string" ? event.state : session.state,
+                      paired: paired ?? session.paired,
+                    }
+                  : session,
+              ),
+            );
+            if (paired) {
+              setQrBySession((current) => {
+                if (!(sessionId in current)) return current;
+                const next = { ...current };
+                delete next[sessionId];
+                return next;
+              });
+            } else if (typeof event.qr === "string" && event.qr) {
+              setQrBySession((current) => ({ ...current, [sessionId]: event.qr as string }));
+            }
+          }
+        } catch (error) {
+          addLog("error", "Evento SSE inválido", error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+
+    return unsubscribe;
+  }, [addLog, applySessionList, settings]);
 
   const applySettings = () => {
-    const next = {
+    const next: ApiSettings = {
       baseUrl: draftSettings.baseUrl.trim().replace(/\/+$/, ""),
-      apiKey: draftSettings.apiKey.trim(),
+      apiKey: "",
     };
-    localStorage.setItem("astracalls-manager-v2-settings", JSON.stringify(next));
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ baseUrl: next.baseUrl }));
     setSettings(next);
-    addLog("info", "Configuração da API atualizada", { baseUrl: next.baseUrl || "mesma origem" });
+    addLog("info", "URL da API atualizada", { baseUrl: next.baseUrl || "mesma origem" });
   };
 
   const createSession = async () => {
@@ -236,8 +254,12 @@ export const App = () => {
 
   const copyResult = async () => {
     if (!requestResult) return;
-    await navigator.clipboard.writeText(formatJSON(requestResult.data));
-    addLog("info", "Resposta copiada para a área de transferência");
+    try {
+      await navigator.clipboard.writeText(formatJSON(requestResult.data));
+      addLog("info", "Resposta copiada para a área de transferência");
+    } catch (error) {
+      addLog("error", "Não foi possível copiar a resposta", error instanceof Error ? error.message : String(error));
+    }
   };
 
   return (
@@ -256,14 +278,10 @@ export const App = () => {
         </div>
       </header>
 
-      <section className="connection-bar panel">
+      <section className="connection-bar panel manager-connection-bar">
         <label>
           <span>URL da API</span>
           <div className="input-with-icon"><Server size={16} /><input value={draftSettings.baseUrl} onChange={(event) => setDraftSettings((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="Mesma origem ou http://localhost:8080" /></div>
-        </label>
-        <label>
-          <span>API key</span>
-          <div className="input-with-icon"><Link2 size={16} /><input type="password" value={draftSettings.apiKey} onChange={(event) => setDraftSettings((current) => ({ ...current, apiKey: event.target.value }))} placeholder="WACALLS_API_KEY" /></div>
         </label>
         <button className="button primary" onClick={applySettings}><Save size={16} />Salvar e conectar</button>
         <button className="button" onClick={() => void loadSessions()}><RefreshCw size={16} />Atualizar</button>
