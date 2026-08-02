@@ -2,6 +2,8 @@ import type { ApiSettings, HttpMethod, RequestResult } from "./types";
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const STREAM_RECONNECT_MS = 2_000;
+export const AUTH_TOKEN_STORAGE_KEY = "astracalls-manager-v2-auth-token";
+export const AUTH_EXPIRED_EVENT = "astracalls-auth-expired";
 
 const trimTrailingSlash = (value: string) => value.trim().replace(/\/+$/, "");
 
@@ -10,9 +12,20 @@ export const apiUrl = (settings: ApiSettings, path: string) => {
   return `${base}${path}`;
 };
 
+const currentAuthToken = () => sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() ?? "";
+
+const signalExpiredAuth = () => {
+  if (!currentAuthToken()) return;
+  sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+};
+
 const authenticatedHeaders = (settings: ApiSettings, accept: string) => {
   const headers = new Headers({ Accept: accept });
-  if (settings.apiKey.trim()) {
+  const token = currentAuthToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  } else if (settings.apiKey.trim()) {
     headers.set("X-API-Key", settings.apiKey.trim());
   }
   return headers;
@@ -47,6 +60,7 @@ export const subscribeToEvents = (settings: ApiSettings, handlers: EventStreamHa
         signal: controller.signal,
       });
 
+      if (response.status === 401) signalExpiredAuth();
       if (!response.ok) {
         throw new Error(`SSE HTTP ${response.status} ${response.statusText}`.trim());
       }
@@ -101,7 +115,7 @@ export const subscribeToEvents = (settings: ApiSettings, handlers: EventStreamHa
       handlers.onError(error instanceof Error ? error : new Error(String(error)));
     }
 
-    if (!stopped) {
+    if (!stopped && currentAuthToken()) {
       reconnectTimer = window.setTimeout(() => void connect(), STREAM_RECONNECT_MS);
     }
   };
@@ -134,6 +148,7 @@ export const apiRequest = async (
 
   try {
     const response = await fetch(apiUrl(settings, path), init);
+    if (response.status === 401) signalExpiredAuth();
     const text = await response.text();
     let data: unknown = null;
     if (text) {
