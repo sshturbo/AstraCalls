@@ -12,7 +12,12 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
-func newTestManager(t *testing.T) *SessionManager {
+type testSessionManager struct {
+	*SessionManager
+	container *sqlstore.Container
+}
+
+func newTestManager(t *testing.T) *testSessionManager {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "mgr_test.db")
@@ -20,27 +25,21 @@ func newTestManager(t *testing.T) *SessionManager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	container := sqlstore.NewWithDB(db, "sqlite3", waLog.Noop)
 	if err := container.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newSessionStore(ctx, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return newSessionManager(ctx, container, NewBroker(), store, waLog.Noop, slog.Default(), 0)
+	manager := newSessionManager(ctx, nil, NewBroker(), nil, waLog.Noop, slog.Default(), 0)
+	return &testSessionManager{SessionManager: manager, container: container}
 }
 
-func (m *SessionManager) addUnconnected(t *testing.T, name string) *Session {
+func (m *testSessionManager) addUnconnected(t *testing.T, name string) *Session {
 	t.Helper()
 	id := newSessionID()
-	if err := m.store.insert(m.appCtx, id, name); err != nil {
-		t.Fatal(err)
-	}
 	client := whatsmeow.NewClient(m.container.NewDevice(), waLog.Noop)
-	s := newSession(m, id, name, client)
+	s := newSession(m.SessionManager, id, name, client)
 	m.register(s)
 	return s
 }
