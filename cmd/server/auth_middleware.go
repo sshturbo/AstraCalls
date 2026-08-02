@@ -21,7 +21,7 @@ func (s *server) withAdminAuth(next http.Handler, apiKey string) http.Handler {
 			s.handleAuthSetup(w, r)
 			return
 		case r.Method == http.MethodPost && path == "/api/auth/login":
-			s.handleAuthLogin(w, r)
+			s.handleAuthLoginRateLimited(w, r)
 			return
 		}
 
