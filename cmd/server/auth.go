@@ -10,10 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +27,7 @@ const (
 	jwtSecretKeyName = "jwt_secret_v1"
 	minimumPassword  = 12
 	maximumPassword  = 128
+	maximumAuthBody  = 8 << 10
 )
 
 type adminUser struct {
@@ -207,6 +208,14 @@ func (a *authService) setup(ctx context.Context, username, password string) (str
 	if err := validateAdminCredentials(username, password); err != nil {
 		return "", jwtClaims{}, err
 	}
+	initialized, err := a.store.initialized(ctx)
+	if err != nil {
+		return "", jwtClaims{}, err
+	}
+	if initialized {
+		return "", jwtClaims{}, errAdminAlreadyConfigured
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return "", jwtClaims{}, fmt.Errorf("hash password: %w", err)
@@ -252,7 +261,10 @@ func (a *authService) issueToken(username string) (string, jwtClaims, error) {
 		Expires:  now.Add(a.ttl).Unix(),
 		JWTID:    base64.RawURLEncoding.EncodeToString(jtiBytes),
 	}
-	headerJSON := []byte(`{"alg":"HS256","typ":"JWT"}`)
+	headerJSON, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		return "", jwtClaims{}, err
+	}
 	claimsJSON, err := json.Marshal(claims)
 	if err != nil {
 		return "", jwtClaims{}, err
@@ -355,9 +367,12 @@ func decodeAuthBody(r *http.Request) (string, string, error) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<10))
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maximumAuthBody+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
+		return "", "", fmt.Errorf("invalid JSON body")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return "", "", fmt.Errorf("invalid JSON body")
 	}
 	return body.Username, body.Password, nil
@@ -432,8 +447,4 @@ func (s *server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		"role":      claims.Role,
 		"expiresAt": claims.Expires,
 	})
-}
-
-func authTokenTTLLabel(seconds int64) string {
-	return strconv.FormatInt(seconds, 10)
 }
