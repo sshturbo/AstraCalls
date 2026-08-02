@@ -68,7 +68,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpSrv := &http.Server{Addr: *addr, Handler: srv.routes()}
+	apiKey := strings.TrimSpace(os.Getenv("WACALLS_API_KEY"))
+	baseHandler := srv.routes()
+	handler := withCORS(srv.withAdminAuth(baseHandler, apiKey))
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
 	go func() {
 		log.Info("HTTP server listening", "addr", *addr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
