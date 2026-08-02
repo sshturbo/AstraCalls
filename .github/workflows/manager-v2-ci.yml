@@ -1,0 +1,50 @@
+name: Manager v2 CI
+
+on:
+  push:
+    paths:
+      - "manager-v2/**"
+      - "cmd/server/**"
+      - ".github/workflows/manager-v2-ci.yml"
+  pull_request:
+    paths:
+      - "manager-v2/**"
+      - "cmd/server/**"
+      - ".github/workflows/manager-v2-ci.yml"
+
+jobs:
+  server-build:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify modules
+        run: |
+          go mod download
+          go mod verify
+      - name: Build server
+        run: go build ./cmd/server
+
+  manager-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: manager-v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build manager
+        run: npm run build
