@@ -30,10 +30,12 @@ func newTestAuthService(t *testing.T) (*authService, *server) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auth := &authService{
-		store:  store,
-		secret: []byte("test-secret-with-at-least-thirty-two-characters"),
-		ttl:    time.Hour,
-		log:    logger,
+		store:          store,
+		secret:         []byte("test-secret-with-at-least-thirty-two-characters"),
+		ttl:            time.Hour,
+		apiToken:       "generated-general-token",
+		apiTokenSource: "generated",
+		log:            logger,
 	}
 	return auth, &server{auth: auth, log: logger}
 }
@@ -54,10 +56,10 @@ func TestSingleAdministratorSetupAndLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token == "" || claims.Username != "admin" || claims.Role != "admin" {
+	if token == "" || claims.Username != "admin" || claims.Role != "admin" || claims.Version != 1 {
 		t.Fatalf("unexpected setup result: token=%t claims=%+v", token != "", claims)
 	}
-	verified, err := auth.verifyToken(token)
+	verified, err := auth.verifyToken(ctx, token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestSingleAdministratorSetupAndLogin(t *testing.T) {
 		replacement = "B"
 	}
 	tampered := token[:len(token)-1] + replacement
-	if _, err := auth.verifyToken(tampered); !errors.Is(err, errInvalidToken) {
+	if _, err := auth.verifyToken(ctx, tampered); !errors.Is(err, errInvalidToken) {
 		t.Fatalf("tampered JWT must be rejected, got %v", err)
 	}
 
@@ -86,6 +88,56 @@ func TestSingleAdministratorSetupAndLogin(t *testing.T) {
 	}
 	if loginToken == "" || loginClaims.Username != "admin" {
 		t.Fatalf("unexpected login result: %+v", loginClaims)
+	}
+}
+
+func TestAdministratorProfileUpdateInvalidatesOldTokens(t *testing.T) {
+	auth, _ := newTestAuthService(t)
+	ctx := context.Background()
+
+	originalToken, _, err := auth.setup(ctx, "admin", "very-strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := auth.updateProfile(ctx, "wrong-password-value", "owner", ""); !errors.Is(err, errInvalidCredentials) {
+		t.Fatalf("expected current password validation, got %v", err)
+	}
+
+	renamedToken, renamedClaims, err := auth.updateProfile(ctx, "very-strong-password", " Owner ", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamedClaims.Username != "owner" || renamedClaims.Version != 2 {
+		t.Fatalf("unexpected renamed claims: %+v", renamedClaims)
+	}
+	if _, err := auth.verifyToken(ctx, originalToken); !errors.Is(err, errInvalidToken) {
+		t.Fatalf("old token must be invalid after username change, got %v", err)
+	}
+	if _, err := auth.verifyToken(ctx, renamedToken); err != nil {
+		t.Fatalf("replacement token must be valid: %v", err)
+	}
+	if _, _, err := auth.login(ctx, "admin", "very-strong-password"); !errors.Is(err, errInvalidCredentials) {
+		t.Fatalf("old username must stop working, got %v", err)
+	}
+
+	passwordToken, passwordClaims, err := auth.updateProfile(ctx, "very-strong-password", "owner", "another-strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if passwordClaims.Version != 3 {
+		t.Fatalf("expected token version 3, got %+v", passwordClaims)
+	}
+	if _, err := auth.verifyToken(ctx, renamedToken); !errors.Is(err, errInvalidToken) {
+		t.Fatalf("previous token must be invalid after password change, got %v", err)
+	}
+	if _, err := auth.verifyToken(ctx, passwordToken); err != nil {
+		t.Fatalf("new password token must be valid: %v", err)
+	}
+	if _, _, err := auth.login(ctx, "owner", "very-strong-password"); !errors.Is(err, errInvalidCredentials) {
+		t.Fatalf("old password must stop working, got %v", err)
+	}
+	if _, _, err := auth.login(ctx, "owner", "another-strong-password"); err != nil {
+		t.Fatalf("new credentials must work: %v", err)
 	}
 }
 
@@ -128,6 +180,46 @@ func TestAdministratorJWTAndAPIKeyMiddleware(t *testing.T) {
 	handler.ServeHTTP(apiKeyResponse, apiKeyRequest)
 	if apiKeyResponse.Code != http.StatusNoContent {
 		t.Fatalf("expected API key request to pass, got %d", apiKeyResponse.Code)
+	}
+}
+
+func TestGeneratedGeneralTokenAuthenticatesIntegrations(t *testing.T) {
+	auth, srv := newTestAuthService(t)
+	handler := srv.withAdminAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), "")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	request.Header.Set("X-API-Key", auth.apiToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("generated general token must authenticate, got %d", response.Code)
+	}
+}
+
+func TestProfileEndpointRequiresAdministratorJWT(t *testing.T) {
+	auth, srv := newTestAuthService(t)
+	token, _, err := auth.setup(context.Background(), "admin", "very-strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := srv.withAdminAuth(http.NotFoundHandler(), "integration-secret")
+
+	integrationRequest := httptest.NewRequest(http.MethodGet, "/api/auth/profile", nil)
+	integrationRequest.Header.Set("X-API-Key", "integration-secret")
+	integrationResponse := httptest.NewRecorder()
+	handler.ServeHTTP(integrationResponse, integrationRequest)
+	if integrationResponse.Code != http.StatusForbidden {
+		t.Fatalf("integration token must not expose administrator profile, got %d", integrationResponse.Code)
+	}
+
+	adminRequest := httptest.NewRequest(http.MethodGet, "/api/auth/profile", nil)
+	adminRequest.Header.Set("Authorization", "Bearer "+token)
+	adminResponse := httptest.NewRecorder()
+	handler.ServeHTTP(adminResponse, adminRequest)
+	if adminResponse.Code != http.StatusOK || !strings.Contains(adminResponse.Body.String(), "generated-general-token") {
+		t.Fatalf("administrator profile must expose general token: %d %s", adminResponse.Code, adminResponse.Body.String())
 	}
 }
 
