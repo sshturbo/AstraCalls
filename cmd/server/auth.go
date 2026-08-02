@@ -34,7 +34,6 @@ type adminUser struct {
 	ID           int
 	Username     string
 	PasswordHash string
-	CreatedAt    time.Time
 }
 
 type adminStore struct {
@@ -83,10 +82,10 @@ func (s *adminStore) create(ctx context.Context, username, passwordHash string) 
 func (s *adminStore) findByUsername(ctx context.Context, username string) (adminUser, error) {
 	var user adminUser
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, password_hash, created_at
+		SELECT id, username, password_hash
 		FROM admin_user
 		WHERE id = $1 AND username = $2
-	`, adminUserID, username).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt)
+	`, adminUserID, username).Scan(&user.ID, &user.Username, &user.PasswordHash)
 	return user, err
 }
 
