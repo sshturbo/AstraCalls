@@ -64,6 +64,11 @@ func TestSingleAdministratorSetupAndLogin(t *testing.T) {
 		t.Fatalf("unexpected verified claims: %+v", verified)
 	}
 
+	tampered := token[:len(token)-1] + "A"
+	if _, err := auth.verifyToken(tampered); !errors.Is(err, errInvalidToken) {
+		t.Fatalf("tampered JWT must be rejected, got %v", err)
+	}
+
 	if _, _, err := auth.setup(ctx, "other", "another-strong-password"); !errors.Is(err, errAdminAlreadyConfigured) {
 		t.Fatalf("expected single-admin conflict, got %v", err)
 	}
