@@ -6,6 +6,19 @@ import (
 	"strings"
 )
 
+func withManagerCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Client-Id, X-API-Key")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // withAdminAuth adiciona as rotas públicas de bootstrap/login e protege as
 // demais rotas da API. O token geral continua disponível para integrações; o
 // JWT é destinado ao Manager v2 e representa o único administrador cadastrado.
