@@ -7,8 +7,8 @@ import (
 )
 
 // withAdminAuth adiciona as rotas públicas de bootstrap/login e protege as
-// demais rotas da API. A API key continua disponível para integrações; o JWT é
-// destinado ao Manager v2 e representa o único administrador cadastrado.
+// demais rotas da API. O token geral continua disponível para integrações; o
+// JWT é destinado ao Manager v2 e representa o único administrador cadastrado.
 func (s *server) withAdminAuth(next http.Handler, apiKey string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -40,8 +40,15 @@ func (s *server) withAdminAuth(next http.Handler, apiKey string) http.Handler {
 		ctx := context.WithValue(r.Context(), authContextKey{}, claims)
 		r = r.WithContext(ctx)
 
-		if r.Method == http.MethodGet && path == "/api/auth/me" {
+		switch {
+		case r.Method == http.MethodGet && path == "/api/auth/me":
 			s.handleAuthMe(w, r)
+			return
+		case r.Method == http.MethodGet && path == "/api/auth/profile":
+			s.handleAuthProfile(w, r)
+			return
+		case r.Method == http.MethodPost && path == "/api/auth/profile":
+			s.handleAuthProfileUpdate(w, r)
 			return
 		}
 
